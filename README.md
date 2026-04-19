@@ -11,19 +11,21 @@ Docker management wrapper for [Moltis](https://moltis.org/) — a secure persona
 
 ## One-line install
 
+To `~/bin`:
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/zeroznet/moltis-helper/main/moltis.sh \
   -o ~/bin/moltis && chmod +x ~/bin/moltis
 ```
 
-Or to `/usr/local/bin` (may require sudo):
+To `/usr/local/bin`:
 
 ```sh
 sudo curl -fsSL https://raw.githubusercontent.com/zeroznet/moltis-helper/main/moltis.sh \
   -o /usr/local/bin/moltis && sudo chmod +x /usr/local/bin/moltis
 ```
 
-## Usage
+## Commands
 
 ```sh
 moltis install      # first-time setup: pull image, prompt for password, start
@@ -37,22 +39,20 @@ moltis version      # print Moltis version
 moltis auth-reset   # reset password interactively
 ```
 
-## Configuration
+## Config
 
 Edit the config block at the top of `moltis.sh`:
 
-| Variable      | Default                            | Description                          |
-|---------------|------------------------------------|--------------------------------------|
-| `DOCKER_MODE` | `sudo`                             | `sudo` or `direct`                   |
-| `IMAGE`       | `ghcr.io/moltis-org/moltis:latest` | image to pull and run                |
-| `TZ_NAME`     | `Europe/Prague`                    | container timezone                   |
-| `CONFIG_DIR`  | `/home/moltis/.config/moltis`      | host path for config volume          |
-| `DATA_DIR`    | `/home/moltis/.moltis`             | host path for data volume            |
+- `DOCKER_MODE` - `sudo` or `direct` (default: `sudo`)
+- `IMAGE` - image to pull and run (default: `ghcr.io/moltis-org/moltis:latest`)
+- `TZ_NAME` - container timezone (default: `Europe/Prague`)
+- `CONFIG_DIR` - host path for config volume (default: `/home/moltis/.config/moltis`)
+- `DATA_DIR` - host path for data volume (default: `/home/moltis/.moltis`)
 
 ## Files
 
-- `moltis.sh` — the script
+- `moltis.sh` - Docker management wrapper for Moltis
 
 ## License
 
-[BSD-2-Clause](LICENSE)
+Licensed under the BSD-2-Clause license. See LICENSE.

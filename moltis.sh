@@ -2,7 +2,6 @@
 # scripted/written by Robert Bopko (github.com/zeroznet) with Boba Bott (Claude Sonnet 4.6)
 set -eu
 
-# --- config ---
 DOCKER_MODE=sudo
 NAME=moltis
 IMAGE=ghcr.io/moltis-org/moltis:latest
@@ -11,12 +10,11 @@ DATA_DIR=/home/moltis/.moltis
 TZ_NAME=Europe/Prague
 DOCKER_SOCK=/var/run/docker.sock
 
-# --- helpers ---
-log()      { printf '[moltis] %s\n' "$*"; }
-warn()     { printf '[moltis] warn: %s\n' "$*" >&2; }
-die()      { printf '[moltis] error: %s\n' "$*" >&2; exit 1; }
+log()      { printf '%s\n' "$*"; }
+warn()     { printf 'WARN: %s\n' "$*" >&2; }
+die()      { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 has_cmd()  { command -v "$1" >/dev/null 2>&1; }
-need_cmd() { has_cmd "$1" || die "missing required command: $1"; }
+need_cmd() { has_cmd "$1" || die "Missing required command: $1"; }
 
 usage() {
   printf 'Usage: %s <command>\n\n' "$0"
