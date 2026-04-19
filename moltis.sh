@@ -134,8 +134,8 @@ run_container() {
         -p 127.0.0.1:13131:13131 \
         -p 127.0.0.1:13132:13132 \
         -p 127.0.0.1:1455:1455 \
-        -v "$CONFIG_DIR:/home/moltis/.config/moltis:U" \
-        -v "$DATA_DIR:/home/moltis/.moltis:U" \
+        -v "$CONFIG_DIR:/home/moltis/.config/moltis" \
+        -v "$DATA_DIR:/home/moltis/.moltis" \
         -v "$sock:/var/run/docker.sock" \
         -v /etc/localtime:/etc/localtime:ro \
         "$IMAGE"
