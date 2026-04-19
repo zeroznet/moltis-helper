@@ -2,13 +2,13 @@
 # scripted/written by Robert Bopko (github.com/zeroznet) with Boba Bott (Claude Sonnet 4.6)
 set -eu
 
+RUNTIME=podman
 DOCKER_MODE=sudo
 NAME=moltis
 IMAGE=ghcr.io/moltis-org/moltis:latest
-CONFIG_DIR=/home/moltis/.config/moltis
-DATA_DIR=/home/moltis/.moltis
+CONFIG_DIR=/home/zero/.config/moltis
+DATA_DIR=/home/zero/.moltis
 TZ_NAME=Europe/Prague
-DOCKER_SOCK=/var/run/docker.sock
 
 log()      { printf '%s\n' "$*"; }
 warn()     { printf 'WARN: %s\n' "$*" >&2; }
@@ -28,13 +28,30 @@ usage() {
   printf '  status      show container status\n'
   printf '  version     print moltis binary version\n'
   printf '  auth-reset  reset moltis password interactively\n'
+  printf '\nRuntime: set RUNTIME=docker or RUNTIME=podman at top of script (default: podman)\n'
+  printf '  DOCKER_MODE=sudo|direct   skip sudo for docker (default: sudo)\n'
 }
 
-docker_cmd() {
-  case "$DOCKER_MODE" in
-    direct) docker "$@" ;;
-    sudo)   sudo docker "$@" ;;
-    *)      die "invalid DOCKER_MODE: $DOCKER_MODE" ;;
+validate_runtime() {
+  case "$RUNTIME" in
+    docker|podman) ;;
+    *) die "invalid RUNTIME: $RUNTIME (use docker or podman)" ;;
+  esac
+  need_cmd "$RUNTIME"
+}
+
+runtime_cmd() {
+  case "$RT" in
+    docker)
+      case "$DOCKER_MODE" in
+        direct) docker "$@" ;;
+        sudo)   sudo docker "$@" ;;
+        *)      die "invalid DOCKER_MODE: $DOCKER_MODE" ;;
+      esac
+      ;;
+    podman)
+      podman "$@"
+      ;;
   esac
 }
 
@@ -43,11 +60,32 @@ docker_gid() {
   if has_cmd getent; then
     gid=$(getent group docker 2>/dev/null | awk -F: 'NR==1{print $3}') || true
   fi
-  if [ -z "$gid" ] && [ -S "$DOCKER_SOCK" ]; then
-    gid=$(stat -c '%g' "$DOCKER_SOCK" 2>/dev/null) || true
+  if [ -z "$gid" ] && [ -S /var/run/docker.sock ]; then
+    gid=$(stat -c '%g' /var/run/docker.sock 2>/dev/null) || true
   fi
   [ -n "$gid" ] || die "could not determine docker gid"
   printf '%s\n' "$gid"
+}
+
+container_sock() {
+  case "$RT" in
+    docker) printf '/var/run/docker.sock' ;;
+    podman)
+      sock=$(podman info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null) || true
+      [ -n "$sock" ] || sock="/run/user/$(id -u)/podman/podman.sock"
+      if [ ! -S "$sock" ]; then
+        mkdir -p "$(dirname "$sock")"
+        systemctl --user enable podman.socket 2>/dev/null || true
+        systemctl --user restart podman.socket
+        i=0
+        while [ $i -lt 10 ] && [ ! -S "$sock" ]; do
+          sleep 1; i=$((i+1))
+        done
+        [ -S "$sock" ] || die "podman socket not found at $sock"
+      fi
+      printf '%s' "$sock"
+      ;;
+  esac
 }
 
 prompt_password() {
@@ -66,24 +104,48 @@ prompt_password() {
 }
 
 run_container() {
-  docker_cmd run -d \
-    --name "$NAME" \
-    --restart unless-stopped \
-    --add-host=host.docker.internal:host-gateway \
-    --group-add "$DOCKER_GID" \
-    -e "TZ=$TZ_NAME" \
-    "$@" \
-    -p 127.0.0.1:13131:13131 \
-    -p 127.0.0.1:13132:13132 \
-    -p 127.0.0.1:1455:1455 \
-    -v "$CONFIG_DIR:/home/moltis/.config/moltis" \
-    -v "$DATA_DIR:/home/moltis/.moltis" \
-    -v "$DOCKER_SOCK:/var/run/docker.sock" \
-    -v /etc/localtime:/etc/localtime:ro \
-    "$IMAGE"
+  sock=$(container_sock)
+  case "$RT" in
+    docker)
+      runtime_cmd run -d \
+        --name "$NAME" \
+        --restart unless-stopped \
+        --add-host=host.docker.internal:host-gateway \
+        --group-add "$DOCKER_GID" \
+        -e "TZ=$TZ_NAME" \
+        "$@" \
+        -p 127.0.0.1:13131:13131 \
+        -p 127.0.0.1:13132:13132 \
+        -p 127.0.0.1:1455:1455 \
+        -v "$CONFIG_DIR:/home/moltis/.config/moltis" \
+        -v "$DATA_DIR:/home/moltis/.moltis" \
+        -v "$sock:/var/run/docker.sock" \
+        -v /etc/localtime:/etc/localtime:ro \
+        "$IMAGE"
+      ;;
+    podman)
+      runtime_cmd run -d \
+        --name "$NAME" \
+        --restart unless-stopped \
+        --userns=keep-id \
+        --add-host=host.docker.internal:host-gateway \
+        -e "TZ=$TZ_NAME" \
+        "$@" \
+        -p 127.0.0.1:13131:13131 \
+        -p 127.0.0.1:13132:13132 \
+        -p 127.0.0.1:1455:1455 \
+        -v "$CONFIG_DIR:/home/moltis/.config/moltis:U" \
+        -v "$DATA_DIR:/home/moltis/.moltis:U" \
+        -v "$sock:/var/run/docker.sock" \
+        -v /etc/localtime:/etc/localtime:ro \
+        "$IMAGE"
+      ;;
+  esac
 }
 
-need_cmd docker
+validate_runtime
+RT=$RUNTIME
+log "runtime: $RT"
 
 cmd=${1:-}
 
@@ -91,12 +153,13 @@ case "$cmd" in
   install)
     log "creating data directories"
     mkdir -p "$CONFIG_DIR" "$DATA_DIR"
-    DOCKER_GID=$(docker_gid)
+    DOCKER_GID=
+    [ "$RT" = docker ] && DOCKER_GID=$(docker_gid)
     MOLTIS_PASSWORD=$(prompt_password)
     log "pulling $IMAGE"
-    docker_cmd pull "$IMAGE"
+    runtime_cmd pull "$IMAGE"
     log "starting container"
-    docker_cmd rm -f "$NAME" >/dev/null 2>&1 || true
+    runtime_cmd rm -f "$NAME" >/dev/null 2>&1 || true
     run_container -e "MOLTIS_PASSWORD=$MOLTIS_PASSWORD"
     unset MOLTIS_PASSWORD
     log "done"
@@ -104,34 +167,35 @@ case "$cmd" in
   update)
     log "creating data directories"
     mkdir -p "$CONFIG_DIR" "$DATA_DIR"
-    DOCKER_GID=$(docker_gid)
+    DOCKER_GID=
+    [ "$RT" = docker ] && DOCKER_GID=$(docker_gid)
     log "pulling $IMAGE"
-    docker_cmd pull "$IMAGE"
+    runtime_cmd pull "$IMAGE"
     log "restarting container"
-    docker_cmd rm -f "$NAME" >/dev/null 2>&1 || true
+    runtime_cmd rm -f "$NAME" >/dev/null 2>&1 || true
     run_container
     log "done"
     ;;
   start)
-    docker_cmd start "$NAME"
+    runtime_cmd start "$NAME"
     ;;
   stop)
-    docker_cmd stop "$NAME"
+    runtime_cmd stop "$NAME"
     ;;
   restart)
-    docker_cmd restart "$NAME"
+    runtime_cmd restart "$NAME"
     ;;
   logs)
-    docker_cmd logs -f --since=1m "$NAME"
+    runtime_cmd logs -f --since=1m "$NAME"
     ;;
   status)
-    docker_cmd ps -a --filter "name=^${NAME}$"
+    runtime_cmd ps -a --filter "name=^${NAME}$"
     ;;
   version)
-    docker_cmd exec -it "$NAME" moltis --version
+    runtime_cmd exec -it "$NAME" moltis --version
     ;;
   auth-reset)
-    docker_cmd exec -it "$NAME" moltis auth reset-password
+    runtime_cmd exec -it "$NAME" moltis auth reset-password
     ;;
   help|-h|--help)
     usage
