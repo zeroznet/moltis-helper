@@ -128,7 +128,7 @@ run_container() {
       runtime_cmd run -d \
         --name "$NAME" \
         --restart unless-stopped \
-        --userns=keep-id \
+        --userns=keep-id:uid=1000,gid=1001 \
         --add-host=host.docker.internal:host-gateway \
         --stop-timeout 30 \
         -e "TZ=$TZ_NAME" \
