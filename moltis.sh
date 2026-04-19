@@ -112,6 +112,7 @@ run_container() {
         --restart unless-stopped \
         --add-host=host.docker.internal:host-gateway \
         --group-add "$DOCKER_GID" \
+        --stop-timeout 30 \
         -e "TZ=$TZ_NAME" \
         "$@" \
         -p 127.0.0.1:13131:13131 \
@@ -129,6 +130,7 @@ run_container() {
         --restart unless-stopped \
         --userns=keep-id \
         --add-host=host.docker.internal:host-gateway \
+        --stop-timeout 30 \
         -e "TZ=$TZ_NAME" \
         "$@" \
         -p 127.0.0.1:13131:13131 \
