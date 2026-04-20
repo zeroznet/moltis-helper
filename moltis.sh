@@ -9,6 +9,7 @@ IMAGE=ghcr.io/moltis-org/moltis:latest
 CONFIG_DIR=/home/zero/.config/moltis
 DATA_DIR=/home/zero/.moltis
 TZ_NAME=Europe/Prague
+PODMAN_SHIM=/home/zero/bin/podman-shim
 
 log()      { printf '%s\n' "$*"; }
 warn()     { printf 'WARN: %s\n' "$*" >&2; }
@@ -19,17 +20,19 @@ need_cmd() { has_cmd "$1" || die "Missing required command: $1"; }
 usage() {
   printf 'Usage: %s <command>\n\n' "$0"
   printf 'Commands:\n'
-  printf '  install     pull image, create dirs, start container (prompts for password)\n'
-  printf '  update      pull latest image and restart container\n'
-  printf '  start       start stopped container\n'
-  printf '  stop        stop running container\n'
-  printf '  restart     restart container\n'
-  printf '  logs        follow container logs (last 1 minute)\n'
-  printf '  status      show container status\n'
-  printf '  version     print moltis binary version\n'
-  printf '  auth-reset  reset moltis password interactively\n'
+  printf '  install         pull image, create dirs, start container (prompts for password)\n'
+  printf '  update          pull latest image and restart container\n'
+  printf '  start           start stopped container\n'
+  printf '  stop            stop running container\n'
+  printf '  restart         restart container\n'
+  printf '  logs            follow container logs (last 1 minute)\n'
+  printf '  status          show container status\n'
+  printf '  version         print moltis binary version\n'
+  printf '  auth-reset      reset moltis password interactively\n'
+  printf '  sandbox-export  export sandbox image from buildkit to podman store\n'
   printf '\nRuntime: set RUNTIME=docker or RUNTIME=podman at top of script (default: podman)\n'
   printf '  DOCKER_MODE=sudo|direct   skip sudo for docker (default: sudo)\n'
+  printf '  PODMAN_SHIM=<path>        path to podman-shim binary (default: /home/zero/bin/podman-shim)\n'
 }
 
 validate_runtime() {
@@ -103,6 +106,74 @@ prompt_password() {
   printf '%s\n' "$pw"
 }
 
+configure_buildx() {
+  log "configuring buildx (default-load=true)"
+  runtime_cmd exec "$NAME" docker buildx rm moltis-builder 2>/dev/null || true
+  runtime_cmd exec "$NAME" docker buildx create \
+    --driver docker-container \
+    --driver-opt default-load=true \
+    --name moltis-builder \
+    --use
+}
+
+sandbox_export() {
+  [ "$RT" = "podman" ] || return 0
+
+  log "triggering sandbox build to resolve current tag"
+  build_out=$(runtime_cmd exec "$NAME" moltis sandbox build 2>&1) || true
+  sandbox_tag=$(printf '%s\n' "$build_out" | grep -oE 'moltis-[a-z0-9]+-sandbox:[a-f0-9]+' | head -1)
+  packages=$(printf '%s\n' "$build_out" | grep '^Packages:' | sed 's/^Packages: //' | sed 's/, /\n/g' | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+  base=$(printf '%s\n' "$build_out" | grep '^Base:' | sed 's/^Base: //')
+
+  if [ -z "$sandbox_tag" ]; then
+    warn "sandbox build output missing Tag — cannot export"
+    warn "moltis sandbox build output: $build_out"
+    return 0
+  fi
+  [ -n "$base" ]     || { warn "sandbox build output missing Base for $sandbox_tag — cannot export"; return 0; }
+  [ -n "$packages" ] || { warn "sandbox build output missing Packages for $sandbox_tag — cannot export"; return 0; }
+  log "sandbox tag: $sandbox_tag"
+
+  if podman image exists "$sandbox_tag" 2>/dev/null; then
+    log "sandbox image already in podman store: $sandbox_tag"
+    return 0
+  fi
+
+  log "waiting for buildx_buildkit_default container"
+  i=0
+  while [ $i -lt 30 ] && ! podman inspect buildx_buildkit_default >/dev/null 2>&1; do
+    sleep 2; i=$((i+1))
+  done
+  podman inspect buildx_buildkit_default >/dev/null 2>&1 || { warn "buildx_buildkit_default not running — cannot export sandbox image"; return 0; }
+
+  df_tmp=/tmp/moltis-sandbox-df.$$
+  cat > "$df_tmp" << EOF
+FROM ${base}
+RUN apt-get update -qq && apt-get install -y -qq ${packages} && mkdir -p /home/sandbox
+RUN if command -v corepack >/dev/null 2>&1; then corepack enable; fi
+RUN if command -v go >/dev/null 2>&1; then GOBIN=/usr/local/bin go install github.com/steipete/gogcli/cmd/gog@latest && ln -sf /usr/local/bin/gog /usr/local/bin/gogcli; fi
+RUN curl -fsSL https://mise.jdx.dev/install.sh | sh && echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> /etc/profile.d/mise.sh
+WORKDIR /home/sandbox
+EOF
+
+  cat "$df_tmp" | podman exec -i buildx_buildkit_default sh -c 'mkdir -p /tmp/ctx && cat > /tmp/ctx/Dockerfile'
+  rm -f "$df_tmp"
+
+  log "exporting sandbox image from buildkit to podman store (buildkit cache hit: ~2min; full rebuild if cache cold: ~15min)"
+  podman exec buildx_buildkit_default buildctl \
+    --addr unix:///run/buildkit/buildkitd.sock \
+    build \
+    --frontend dockerfile.v0 \
+    --local context=/tmp/ctx \
+    --local dockerfile=/tmp/ctx \
+    --output "type=docker,name=${sandbox_tag}" \
+    | podman load \
+    && log "sandbox image exported: $sandbox_tag" \
+    || warn "sandbox export failed — sandbox exec will fail until manually fixed"
+
+  podman exec buildx_buildkit_default rm -rf /tmp/ctx 2>/dev/null || true
+}
+
 run_container() {
   sock=$(container_sock)
   case "$RT" in
@@ -140,6 +211,7 @@ run_container() {
         -v "$DATA_DIR:/home/moltis/.moltis" \
         -v "$sock:/var/run/docker.sock" \
         -v /etc/localtime:/etc/localtime:ro \
+        -v "$PODMAN_SHIM:/usr/bin/podman:ro" \
         "$IMAGE"
       ;;
   esac
@@ -164,6 +236,8 @@ case "$cmd" in
     runtime_cmd rm -f "$NAME" >/dev/null 2>&1 || true
     run_container -e "MOLTIS_PASSWORD=$MOLTIS_PASSWORD"
     unset MOLTIS_PASSWORD
+    configure_buildx
+    sandbox_export
     log "done"
     ;;
   update)
@@ -176,16 +250,20 @@ case "$cmd" in
     log "restarting container"
     runtime_cmd rm -f "$NAME" >/dev/null 2>&1 || true
     run_container
+    configure_buildx
+    sandbox_export
     log "done"
     ;;
   start)
     runtime_cmd start "$NAME"
+    sandbox_export
     ;;
   stop)
     runtime_cmd stop "$NAME"
     ;;
   restart)
     runtime_cmd restart "$NAME"
+    sandbox_export
     ;;
   logs)
     runtime_cmd logs -f --since=1m "$NAME"
@@ -198,6 +276,9 @@ case "$cmd" in
     ;;
   auth-reset)
     runtime_cmd exec -it "$NAME" moltis auth reset-password
+    ;;
+  sandbox-export)
+    sandbox_export
     ;;
   help|-h|--help)
     usage
